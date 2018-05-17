@@ -3,10 +3,11 @@
 # Author: Shawn Roche
 # Date: 4/12/2018
 #########################
-
+import sys
+import subprocess
 
 class Columnizer:
-    def __init__(self, headers, base_padding=6, mode='line', colorize=False, colormap=False, delimiter='  '):
+    def __init__(self, headers, base_padding=6, mode='line', colorize=False, colormap=False, delimiter='  ', indent=0, paginate=True, paginate_break=True):
         """
         Simplifies outputting large data sets in formatted columns. Just pass the list of headers when instancing and
         then calling update() with more values will handle formatting what is passed into columns. Can also optionally
@@ -30,11 +31,17 @@ class Columnizer:
         :type colormap: dict
         :param delimiter: What to put as a spacer in between columns. Default is 3 spaces
         :type delimiter: str
+        :param indent: Optional param to indent the table to better visually break up output
+        :type indent: int
+        :param paginate: Output will paginate based on the terminal height if needed. Default is True
+        :type paginate: bool
+        :param paginate_break: Output will paginate based on the terminal height if needed. Default is True
+        :type paginate_break: bool
         """
         if not colormap:
             self. colormap = {
-                'fail': ('\033[91m{}\033[0m', ['fail', 'failed', 'error', 'false']),
-                'ok': ('\033[92m{}\033[0m', ['ok', 'pass', 'passed', 'success', 'true']),
+                'fail': ('\033[91m{}\033[0m', ['fail', 'failed', 'error', 'false', 'no']),
+                'ok': ('\033[92m{}\033[0m', ['ok', 'pass', 'passed', 'success', 'true', 'yes']),
                 'warn': ('\033[93m{}\033[0m', ['warn', 'warning']),
                 'header': ('\033[95m{}\033[0m', ['']),
                 'bold': ('\033[1m{}\033[0m', ['']),
@@ -52,6 +59,11 @@ class Columnizer:
         self.column_number = 0
         self.header_printed = False
         self.needs_reflow = False
+        self.indent = indent
+        self.paginate = paginate
+        self.paginate_break = paginate_break
+        self.term_height = int(subprocess.check_output(['stty', 'size']).split()[0])
+        self.count = 0
 
     def pad_columns(self, message):
         """
@@ -59,8 +71,7 @@ class Columnizer:
         :param message:
         :return:
         """
-        # Set the padding to the base level passed to start
-        header = ''
+        header = ' ' * self.indent
 
         # Check that a list of lists was passed for message, if not make it one
         # This is so the same logic can be used for mode=stream, mode=line, and mode=all
@@ -92,14 +103,15 @@ class Columnizer:
             if len(self.padding) - i > 1:
                 header += self.delimiter
 
+        line_break = '{}{}'.format(' ' * self.indent, '-' * len(header))
         if self.colorize_output:
             header = self.colormap['bold'][0].format(header)
 
         print(header)
-        print('-' * len(header))
+        print(line_break)
         self.header_printed = True
 
-    def update(self, message, auto=False):
+    def update(self, message):
         """
         Prints a message under the header formatted into columns.
 
@@ -142,27 +154,40 @@ class Columnizer:
             # Color the text if requested
             msg = self.colorize(msg)
 
+        if self.column_number == 0:
+            msg = '{}{}'.format(' ' * self.indent, msg)
         self.column_number += 1
         if self.column_number < len(self.headers):
             # If the column isnt the last in the row add the delimiter chars to it
             msg += self.delimiter
-        else:
-            self.message.append(self.row)
 
         sys.stdout.write(msg)
         sys.stdout.flush()
 
         if self.column_number >= len(self.headers):
+            self.count += 1
             self.column_number = 0
             self.message.append(self.row)
             self.row = []
             print('')
+            if self.needs_reflow:
+                stored_mode = self.mode
+                self.needs_reflow = False
+                self.mode = 'all'
+                self.pad_columns(self.message)
+                self.update(self.message)
+                self.mode = stored_mode
 
-        if self.needs_reflow:
-            print(self.message)
-            self.pad_columns(self.message)
-            self.needs_reflow = False
-            self.update(self.message)
+            if self.paginate and len(self.message) > self.term_height - 6:
+                if self.paginate_break:
+                    user_input = input('\nlines {}-{} '.format(self.count - self.term_height + 6, self.count))
+                    if user_input == 'q':
+                        print('Manual interrupt received')
+                        exit(0)
+                    print()
+                self.message = []
+                self.header_printed = False
+
 
     def colorize(self, word):
         """
@@ -175,7 +200,7 @@ class Columnizer:
         """
         word = str(word)
 
-        for key, value in self.colormap.iteritems():
+        for key, value in self.colormap.items():
             color, criteria = value
             if word.lower().strip() in criteria:
                 word = color.format(word)
