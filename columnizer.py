@@ -1,42 +1,42 @@
+import subprocess
+
+
 class Columnizer:
     def __init__(self, headers, base_padding=6, mode='line', colorize=False, colormap=False, delimiter='  ', indent=0,
-                 col_just=None, paginate=True, paginate_break=False, print_header=True):
+                 col_just=None, paginate=False, paginate_break=False, print_header=True):
         """
-        Simplifies outputting large data sets in formatted columns. Just pass the list of headers when instancing and
-        then calling update() with more values will handle formatting what is passed into columns. Can also optionally
+        Simplifies outputting large data sets in formatted columns. Pass a list of headers when instancing and
+        then calling update() will handle formatting what is passed into even columns. Can also optionally
         add ANSI coloring to output.
 
-        :param headers: headers to use for this instance
+        :param headers: Column headers. Can be a list or a list of lists if you want multiple tiers of headers.
+                        If a list of lists is used, the last list will be used for dict matching
         :type headers: list
-        :param base_padding: minimum padding level to use for all columns regardless of header length
+        :param base_padding: Minimum padding level to use for all columns regardless of actual length
         :type base_padding: int
-        :param mode: Possible values are 'line', or 'all'. Default is line. Depending on what is passed,
-            self.update() will either print the whole table at once or accept updates line by line.
+        :param mode: 'line', or 'all'. Default is line. Controls if self.update() expects the whole table at once, or row by row
         :type mode: str
-        :param colorize: Whether to add term coloring to passed message for common words
-        :type colorize: Bool
-        :param col_just: If given, a list of column justifications for each column, to override defaults
-        :type col_just: List
-        :param colormap: define custom color mapping for words or numbers. You can also set a color for a specific
+        :param colorize: Whether to add ANSI coloring if words match anything in the colormap
+        :type colorize: bool
+        :param col_just: List of column justifications for each column, to override defaults
+        :type col_just: list
+        :param colormap: Define custom color mapping for words or numbers. You can also set a color for a specific
                         column that is always applied. Pass a dict in similar format to below which will update the
                         default colormap. If setting a column, no "match" key is needed
                             EX: {'fail': {'color': '\033[91m', 'match': ['fail', 'failed', 'error']},
                                  3: {'color': '\033[92m'}
         :type colormap: dict
-        :param delimiter: What to put as a spacer in between columns. Default is 3 spaces
+        :param delimiter: Spacer chars in between columns. Default is 3 spaces
         :type delimiter: str
-        :param indent: Optional param to indent the table to better visually break up output
+        :param indent: Indent the whole table including headers
         :type indent: int
-        :param paginate: Output will paginate based on the terminal height if needed. Default is True
+        :param paginate: Headers will be reprinted based on the terminal height so a line of headers is always visible
         :type paginate: bool
-        :param paginate_break: Output will paginate based on the terminal height if needed. Default is False
+        :param paginate_break: Pauses for input from user each time headers get reprinted by paginate
         :type paginate_break: bool
         :param print_header: Toggle printing of the header line
         :type print_header: bool
         """
-
-        self.colors = BColors()
-
         self.colormap = {
             'fail': {
                 'color': '\033[91m',
@@ -51,7 +51,7 @@ class Columnizer:
                 'match': ['warn', 'warning']
             },
             'header': {
-                'color': self.colors.YELLOW,
+                'color': '\033[93m',
                 'match': []
             },
             'bold': {
@@ -94,7 +94,9 @@ class Columnizer:
 
     def discover_padding(self, message):
         """
-        Called after the first line of output is given, or on table reflow, to determine the appropriate space padding to make even columns
+        Takes the values it has so far to determine the appropriate padding needed to add to each value to make neat
+        columns. Padding is determined per column, not 1 value for the whole table
+
         :param message:
         :return:
         """
@@ -102,7 +104,7 @@ class Columnizer:
         # Check that a list of lists was passed for message, if not make it one
         # This is so the same logic can be used for mode=stream, mode=line, and mode=all
         try:
-            if not isinstance(message[0], list):
+            if not isinstance(message, list):
                 message = [message]
         except KeyError:
             message = [message]
@@ -114,11 +116,11 @@ class Columnizer:
                 key = self.headers[index]
                 for row in message:
                     if isinstance(row, dict):
-                        word = row.get(key)
+                        word = row.get(key, '-')
                     else:
                         word = row[index]
-
-                    self.column_data[key]['padding'] = max([len(str(word)), len(str(col)), self.column_data[key]['padding']])
+                    vals_to_check = [len(str(word)), len(str(col)), self.column_data[key]['padding']]
+                    self.column_data[key]['padding'] = max(vals_to_check)
 
                     if not self.col_just:
                         # If manual column justifications haven't been specified, discover them dynamically
@@ -127,7 +129,8 @@ class Columnizer:
                             self.column_data[key]['type'] = 'num'
                         except ValueError:
                             self.column_data[key]['type'] = 'str'
-
+                        except TypeError:
+                            self.column_data[key]['type'] = 'str'
                     else:
                         self.column_data[key]['type'] = self.col_just[index]
 
@@ -152,10 +155,10 @@ class Columnizer:
 
     def update(self, message):
         """
-        Prints a message under the header formatted into columns.
+        Prints values into columns
 
-        :param message: what should be printed separated by column
-        :type message: list str
+        :param message: List of values to be printed
+        :type message: list
         """
         if not self.padding_done:
             self.discover_padding(message)
@@ -170,13 +173,20 @@ class Columnizer:
                 self._update_line(row)
 
     def _update_line(self, row):
+        """
+        Formats passed values for a row in the table to fit columns. Reflows the whole table if a long value that would
+        break the spacing of the columns in detected
+
+        :param row:
+        :return:
+        """
         self.count += 1
         self.message.append(row)
         formatted_row = []
 
         for index, col in enumerate(self.headers):
             if isinstance(row, dict):
-                word = row[col]
+                word = row.get(col, '-')
             else:
                 word = row[index]
             formatted_row.append(self._format_column(col, word))
@@ -188,15 +198,25 @@ class Columnizer:
             if self.paginate and len(self.message) + 7 > self.term_height:
                 if self.paginate_break:
                     print('\nlines {}-{} '.format(self.count - self.term_height + 6, self.count))
-                    raw_input('Enter to continue, CTRL+C to quit')
+                    input('Enter to continue, CTRL+C to quit')
 
-                print
+                print()
                 self.message = []
                 self.padding_done = False
         else:
             self._reflow_columns()
 
     def _format_column(self, col, message):
+        """
+        Justifies, pads, and colors the value that will be
+
+        :param col: Column that the value needs to be formatted for. If passing lists of values this will be the index
+                    of the column. If passing dicts of values will be the key(header) for that column
+        :type col: str int
+        :param message: Value that will be formatted
+        :type message: str
+        :return:
+        """
         word = str(message)
         if len(word) > self.column_data[col]['padding']:
             self.column_data[col]['padding'] = len(word)
@@ -215,9 +235,9 @@ class Columnizer:
 
     def _reflow_columns(self):
         """
-        Used in line by line mode if a value passed later in table would break the column spacing. It re discovers the
-        appropriate padding and reprints the whole table thats been made up til that pount
-        :return:
+        If a value passed to self.update() after padding has been determined would would break the column spacing the
+        table will be re-flowed. Padding is rediscovered using the new values and the whole table so far is reprinted
+        with the new spacing to preserve columns
         """
         # Try really hard to prevent recursion hell
         self.needs_reflow = False
@@ -240,7 +260,7 @@ class Columnizer:
 
     def colorize(self, word, column):
         """
-        Will apply colors to words like pass, fail, ok, warn, warning
+        Will apply colors to words that are defined in self.colormap
 
         :param word: Message that will be colorized
         :type word: str
